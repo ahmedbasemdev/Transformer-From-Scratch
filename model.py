@@ -87,7 +87,7 @@ class MultiHeadAttentionBlock(nn.Module):
         self.w_k = nn.Linear(d_model, d_model) # WK
         self.w_v = nn.Linear(d_model, d_model) # WV
 
-        self.w_output = nn.Linear(d_model, d_model)
+        self.w_0 = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
     
     # static method means that you can call this method without create an object from this class
@@ -111,6 +111,7 @@ class MultiHeadAttentionBlock(nn.Module):
         # attention_scores for the visualization
         return (attention_scores @ value) , attention_scores
 
+
     def forward(self, q, k, v, mask):
         query = self.w_q(q) ## (Batch_size, seq_len, D_model)  ---> (Batch_size, seq_len, D_model) 
         key = self.w_k(k) ## (Batch_size, seq_len, D_model)  ---> (Batch_size, seq_len, D_model)
@@ -127,3 +128,45 @@ class MultiHeadAttentionBlock(nn.Module):
         x, self.attention_scores = MultiHeadAttentionBlock.attention(query, key,
                                                                      value, mask,
                                                                      self.dropout)
+        # (Batch, h, Seq_len, d_k) --> (Batch, Seq_len, h,  d_k) --Transpose--> ( Batch, Seq_len, d_model)
+        x = x.transpose(1, 2).contiguous().view(x.shape[0],-1, self.h * self.d_k)
+
+        # ( Batch, Seq_len, d_model) --> ( Batch, Seq_len, d_model)
+        return self.w_0(x)
+
+class ResidualConnection(nn.Module):
+    def __init__(self, dropout:float) -> None:
+        super().__init__()
+
+        self.dropout= nn.Dropout(dropout)
+        self.norm = LayerNormalization()
+    
+    def forward(self, x, sublayer):
+        # sublayer previous layer
+        return x + self.dropout(sublayer(self.norm(x)))
+
+class EncoderBlock(nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock,
+                 dropout:float):
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.dropout = nn.Dropout(dropout)
+        self.residual_connections = nn.ModuleList([ResidualConnection(dropout) for _ in  range(2)])
+    
+    def forward(self, x, src_mask):
+        x = self.residual_connections[0](x, lambda x:self.self_attention_block(x, x, x, src_mask))
+        x = self.residual_connections[1](x, self.feed_forward_block)
+        return x
+
+class Encoder(nn.Module):
+    def __init__(self, layers:nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+    
+    def forward(self, x, mask):
+        for layer in self.layers:
+            x = layer(x, mask)
+        
+        return self.norm(x)
